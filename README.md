@@ -1,7 +1,8 @@
 # PublicApi
 
 Usage:
-Add PublicApi.exe to the execution path on your machine.
+Build the solution PublicApi.sln.
+Copy PublicApi.exe to the execution path on your machine.
 
 ```Shell
 PublicApi MySolution.sln > publicApi.txt
