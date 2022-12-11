@@ -3,6 +3,7 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
 using System;
+using System.Collections.Concurrent;
 using System.Reflection;
 
 namespace PublicApi
@@ -12,8 +13,8 @@ namespace PublicApi
         static async Task Main(string[] args)
         {
             MSBuildLocator.RegisterDefaults();
-            string solutionPath = (args.Length>0 ? args[0] : null) ?? @"C:\gh\microsoft-identity-abstractions-for-dotnet\Microsoft.Identity.Abstractions.sln";
-            //         string solutionPath = @"C:\gh\microsoft-identity-web\Microsoft.Identity.Web.sln";
+             //   string solutionPath = (args.Length>0 ? args[0] : null) ?? @"C:\gh\microsoft-identity-abstractions-for-dotnet\Microsoft.Identity.Abstractions.sln";
+            string solutionPath = @"C:\gh\microsoft-identity-web\Microsoft.Identity.Web.sln";
 
             var msWorkspace = MSBuildWorkspace.Create();
 
@@ -22,11 +23,16 @@ namespace PublicApi
             Console.WriteLine("Done");
 
             Console.WriteLine("Parsing");
-            var compilations = await Task.WhenAll(solution.Projects.Where(p => p.FilePath!.Contains("src")).Select(x => x.GetCompilationAsync()));
+            var compilations = await Task.WhenAll(solution.Projects.Where(p => p.FilePath!.Contains("src")).Select(p => p.GetCompilationAsync()));
             Console.WriteLine("Done");
 
-            // Reference: https://codereview.stackexchange.com/questions/84932/using-roslyn-to-find-interfaces-within-a-solution
-            var typesByFullName = compilations
+            ConcurrentDictionary<IAssemblySymbol, Project> projectOfCompilation = new ConcurrentDictionary<IAssemblySymbol, Project>();
+            foreach(Project p in solution.Projects.Where(p => p.FilePath!.Contains("src")))
+            {
+                projectOfCompilation.TryAdd(p.GetCompilationAsync().Result.Assembly, p);
+            }
+
+            var types = compilations
               .SelectMany(compilation => compilation!.SyntaxTrees.Select(tree => new { Compilation = compilation!, SyntaxTree = tree }))
               .Select(data => data.Compilation.GetSemanticModel(data.SyntaxTree))
               .SelectMany(
@@ -41,72 +47,109 @@ namespace PublicApi
                       .ToList()
                       .OrderBy(t => t.ToDisplayString());
 
-            foreach (ITypeSymbol type in typesByFullName.Where(t => IsPublicApi(t)))
+            var typesByFullName = types.GroupBy(t => t.ToDisplayString());
+
+            var format = new SymbolDisplayFormat(SymbolDisplayGlobalNamespaceStyle.Omitted,
+                SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+                SymbolDisplayGenericsOptions.IncludeTypeParameters | SymbolDisplayGenericsOptions.IncludeVariance | SymbolDisplayGenericsOptions.IncludeTypeConstraints,
+                SymbolDisplayMemberOptions.IncludeParameters | SymbolDisplayMemberOptions.IncludeAccessibility | SymbolDisplayMemberOptions.IncludeType | SymbolDisplayMemberOptions.IncludeModifiers,
+                SymbolDisplayDelegateStyle.NameAndSignature,
+                SymbolDisplayExtensionMethodStyle.StaticMethod,
+                SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
+                SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
+                SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
+                SymbolDisplayKindOptions.IncludeTypeKeyword | SymbolDisplayKindOptions.IncludeMemberKeyword,
+                SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNotNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.RemoveAttributeSuffix | SymbolDisplayMiscellaneousOptions.AllowDefaultLiteral
+                );
+
+            foreach (var g in typesByFullName)
             {
-                Console.WriteLine($"{type.DeclaredAccessibility.ToString().ToLower()} {type.TypeKind.ToString().ToLower()} {type.ToDisplayString()}");
-                Console.WriteLine("{");
-                foreach (ISymbol child in type.GetMembers().Where(m => IsPublicApi(m)).OrderBy(c => c.ToDisplayString()))
+                IEnumerable<string> projectStrings = g.Select(t => GetTargetFramework(t, projectOfCompilation)).ToArray();
+                foreach (var type in g.Where(t => IsPublicApi(t)).Take(1))
                 {
-                    Console.Write($" {child.DeclaredAccessibility.ToString().ToLower()} ");
-
-                    if (type.BaseType == null || type.BaseType.ToDisplayString() != "System.Enum")
+                    Console.WriteLine($"// {type.ContainingAssembly.Name} ({string.Join(", ", projectStrings)})");
+                    if (type.GetAttributes() != null && type.GetAttributes().Length > 0)
                     {
-                        if (child.IsStatic) { Console.Write("static "); }
-                        if (child.IsSealed) { Console.Write("sealed "); }
-                        if (child.IsAbstract) { Console.Write("abstract "); }
-                        if (child.IsVirtual) { Console.Write("virtual "); }
-                        if (child.IsOverride) { Console.Write("override "); }
+                        Console.WriteLine(string.Join(", ", type.GetAttributes().Select(a => a.ToString()).ToArray()));
                     }
+                    Console.WriteLine($"{type.DeclaredAccessibility.ToString().ToLower()} {type.ToDisplayString(format)}");
 
-                    IMethodSymbol? method = child as IMethodSymbol;
-                    if (method != null)
+                    /// BASE CLASS
+
+                    Console.WriteLine("{");
+                    foreach (ISymbol child in type.GetMembers().Where(m => IsPublicApi(m)).OrderBy(c => c.ToDisplayString()))
                     {
-                        if (method.MethodKind != MethodKind.Constructor && method.MethodKind != MethodKind.StaticConstructor)
+                        Console.Write($" {child.DeclaredAccessibility.ToString().ToLower()} ");
+
+                        if (type.BaseType == null || type.BaseType.ToDisplayString() != "System.Enum")
                         {
-                            Console.Write($"{DisplaySimplifiedName(method.ReturnType, method)} ");
+                            if (child.IsStatic) { Console.Write("static "); }
+                            if (child.IsSealed) { Console.Write("sealed "); }
+                            if (child.IsAbstract) { Console.Write("abstract "); }
+                            if (child.IsVirtual) { Console.Write("virtual "); }
+                            if (child.IsOverride) { Console.Write("override "); }
                         }
-                        Console.WriteLine($"{DisplaySimplifiedName(method)};");
-                    }
 
-                    IPropertySymbol? property = child as IPropertySymbol;
-                    if (property != null)
-                    {
-                        Console.Write($"{DisplaySimplifiedName(property.Type, property)} ");
-
-                        Console.Write($"{DisplaySimplifiedName(property)} ");
-                        Console.Write("{");
-                        if (property.GetMethod != null && IsVisibleInPublicApi(property.GetMethod)) { Console.Write("set; "); }
-                        if (property.SetMethod != null && IsVisibleInPublicApi(property.SetMethod)) { Console.Write("get; "); }
-                        Console.WriteLine("}");
-                    }
-
-                    IFieldSymbol? field = child as IFieldSymbol;
-                    if (field != null)
-                    {
-                        Console.Write($"{DisplaySimplifiedName(field)}");
-                        if (field.HasConstantValue)
+                        IMethodSymbol? method = child as IMethodSymbol;
+                        if (method != null)
                         {
-                            Console.WriteLine($" = {field.ConstantValue};");
+                            if (method.MethodKind != MethodKind.Constructor && method.MethodKind != MethodKind.StaticConstructor)
+                            {
+                                Console.Write($"{DisplaySimplifiedName(format, method.ReturnType, method)} ");
+                            }
+                            Console.WriteLine($"{DisplaySimplifiedName(format, method)};");
                         }
-                        else
+
+                        IPropertySymbol? property = child as IPropertySymbol;
+                        if (property != null)
                         {
-                            Console.WriteLine(";");
+                            Console.Write($"{DisplaySimplifiedName(format, property.Type, property)} ");
+
+                            Console.Write($"{DisplaySimplifiedName(format, property)} ");
+                            Console.Write("{");
+                            if (property.GetMethod != null && IsVisibleInPublicApi(property.GetMethod)) { Console.Write("set; "); }
+                            if (property.SetMethod != null && IsVisibleInPublicApi(property.SetMethod)) { Console.Write("get; "); }
+                            Console.WriteLine("}");
+                        }
+
+                        IFieldSymbol? field = child as IFieldSymbol;
+                        if (field != null)
+                        {
+                            Console.Write($"{DisplaySimplifiedName(format, field)}");
+                            if (field.HasConstantValue)
+                            {
+                                Console.WriteLine($" = {field.ConstantValue};");
+                            }
+                            else
+                            {
+                                Console.WriteLine(";");
+                            }
                         }
                     }
+                    Console.WriteLine("}");
                 }
-                Console.WriteLine("}");
             }
         }
 
-        private static string DisplaySimplifiedName(ISymbol symbol, ISymbol? type = null)
+        private static string GetTargetFramework(ITypeSymbol t, ConcurrentDictionary<IAssemblySymbol, Project> projectOfCompilation)
+        {
+            string targetFramework = projectOfCompilation[t.ContainingAssembly].Name.Substring(t.ContainingAssembly.Name.Length).Trim(')', '(', ' ');
+            if (string.IsNullOrWhiteSpace(targetFramework))
+            {
+                targetFramework = Path.GetFileName(Path.GetDirectoryName(projectOfCompilation[t.ContainingAssembly].OutputFilePath));
+            }
+            return targetFramework;
+        }
+
+        private static string DisplaySimplifiedName(SymbolDisplayFormat format, ISymbol symbol, ISymbol? type = null)
         {
             type = type ?? symbol;
             if (type != null)
             {
-                return symbol.ToDisplayString().Replace(type.ContainingType.ToDisplayString() + ".", string.Empty).Replace(type.ContainingNamespace.ToDisplayString() + ".", string.Empty);
+                return symbol.ToDisplayString().Replace(type.ContainingType.ToDisplayString(format) + ".", string.Empty).Replace(type.ContainingNamespace.ToDisplayString() + ".", string.Empty);
             }
             else
-                return symbol.ToDisplayString();
+                return symbol.ToDisplayString(format);
         }
 
         private static bool IsPublicApi(ISymbol symbol)
