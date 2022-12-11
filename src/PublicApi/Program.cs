@@ -2,9 +2,7 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.MSBuild;
-using System;
 using System.Collections.Concurrent;
-using System.Reflection;
 
 namespace PublicApi
 {
@@ -26,10 +24,15 @@ namespace PublicApi
             var compilations = await Task.WhenAll(solution.Projects.Where(p => p.FilePath!.Contains("src")).Select(p => p.GetCompilationAsync()));
             Console.WriteLine("Done");
 
+#pragma warning disable RS1024 // Symbols should be compared for equality. Here we want to compare the references.
             ConcurrentDictionary<IAssemblySymbol, Project> projectOfCompilation = new ConcurrentDictionary<IAssemblySymbol, Project>();
-            foreach(Project p in solution.Projects.Where(p => p.FilePath!.Contains("src")))
+#pragma warning restore RS1024 // Symbols should be compared for equality
+            foreach (Project p in solution.Projects.Where(p => p.FilePath!.Contains("src")))
             {
-                projectOfCompilation.TryAdd(p.GetCompilationAsync().Result.Assembly, p);
+
+                // MULTIPLE PROJECTS FOR ASSEMBLY? (MicrosoftGraphBeta)
+
+                projectOfCompilation.TryAdd(p.GetCompilationAsync().Result!.Assembly, p);
             }
 
             var types = compilations
@@ -49,36 +52,42 @@ namespace PublicApi
 
             var typesByFullName = types.GroupBy(t => t.ToDisplayString());
 
-            var format = new SymbolDisplayFormat(SymbolDisplayGlobalNamespaceStyle.Omitted,
-                SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
-                SymbolDisplayGenericsOptions.IncludeTypeParameters | SymbolDisplayGenericsOptions.IncludeVariance | SymbolDisplayGenericsOptions.IncludeTypeConstraints,
-                SymbolDisplayMemberOptions.IncludeParameters | SymbolDisplayMemberOptions.IncludeAccessibility | SymbolDisplayMemberOptions.IncludeType | SymbolDisplayMemberOptions.IncludeModifiers,
-                SymbolDisplayDelegateStyle.NameAndSignature,
-                SymbolDisplayExtensionMethodStyle.StaticMethod,
-                SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
-                SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
-                SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
-                SymbolDisplayKindOptions.IncludeTypeKeyword | SymbolDisplayKindOptions.IncludeMemberKeyword,
-                SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNotNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.RemoveAttributeSuffix | SymbolDisplayMiscellaneousOptions.AllowDefaultLiteral
-                );
 
             foreach (var g in typesByFullName)
             {
-                IEnumerable<string> projectStrings = g.Select(t => GetTargetFramework(t, projectOfCompilation)).ToArray();
+                IEnumerable<string> projectStrings = g
+                    .Where(t=>IsPublicApi(t))
+                    .Select(t => GetTargetFramework(t, projectOfCompilation))
+                    .Distinct()
+                    .ToArray();
                 foreach (var type in g.Where(t => IsPublicApi(t)).Take(1))
                 {
+                    Console.WriteLine();
                     Console.WriteLine($"// {type.ContainingAssembly.Name} ({string.Join(", ", projectStrings)})");
-                    if (type.GetAttributes() != null && type.GetAttributes().Length > 0)
-                    {
-                        Console.WriteLine(string.Join(", ", type.GetAttributes().Select(a => a.ToString()).ToArray()));
-                    }
+
+                    // Write the attributes
+                    WriteAttributes(type.GetAttributes());
                     Console.WriteLine($"{type.DeclaredAccessibility.ToString().ToLower()} {type.ToDisplayString(format)}");
 
-                    /// BASE CLASS
+                    /// Interfaces have no base type
+                    List<ITypeSymbol> bases = new List<ITypeSymbol>();
+                    if (type.BaseType != null && type.BaseType.ToDisplayString() != "object")
+                    {
+                        bases.Add(type.BaseType);
+                    }
+                    if (type.Interfaces != null && type.Interfaces.Any())
+                    {
+                        bases.AddRange(type.Interfaces);
+                    }
+                    if (bases.Count > 0)
+                    {
+                        Console.WriteLine($" : {string.Join(", ", bases.Select(i => DisplaySimplifiedName(format, i).Replace("class ", string.Empty).Replace("interface ", string.Empty)))}");
+                    }
 
                     Console.WriteLine("{");
                     foreach (ISymbol child in type.GetMembers().Where(m => IsPublicApi(m)).OrderBy(c => c.ToDisplayString()))
                     {
+                        WriteAttributes(child.GetAttributes(), " ");
                         Console.Write($" {child.DeclaredAccessibility.ToString().ToLower()} ");
 
                         if (type.BaseType == null || type.BaseType.ToDisplayString() != "System.Enum")
@@ -131,6 +140,19 @@ namespace PublicApi
             }
         }
 
+        private static void WriteAttributes(ICollection<AttributeData>? attributes, string margin="")
+        {
+            if (attributes != null && attributes.Count > 0)
+            {
+                Console.WriteLine(margin+"[" + string.Join("]\n[", attributes
+                    .Select(a => a.ToString()
+                            .Replace("Attribute(", string.Empty)
+                            .Replace("Attribute]", string.Empty)
+                            .Replace("System.", string.Empty))
+                            .ToArray()) + "]");
+            }
+        }
+
         private static string GetTargetFramework(ITypeSymbol t, ConcurrentDictionary<IAssemblySymbol, Project> projectOfCompilation)
         {
             string targetFramework = projectOfCompilation[t.ContainingAssembly].Name.Substring(t.ContainingAssembly.Name.Length).Trim(')', '(', ' ');
@@ -144,7 +166,7 @@ namespace PublicApi
         private static string DisplaySimplifiedName(SymbolDisplayFormat format, ISymbol symbol, ISymbol? type = null)
         {
             type = type ?? symbol;
-            if (type != null)
+            if (type != null && type.ContainingType!=null)
             {
                 return symbol.ToDisplayString().Replace(type.ContainingType.ToDisplayString(format) + ".", string.Empty).Replace(type.ContainingNamespace.ToDisplayString() + ".", string.Empty);
             }
@@ -170,5 +192,32 @@ namespace PublicApi
             return (m.DeclaredAccessibility == Accessibility.Public || m.DeclaredAccessibility == Accessibility.Protected)
                 && !m.IsImplicitlyDeclared;
         }
+
+        private static SymbolDisplayFormat format = new SymbolDisplayFormat(SymbolDisplayGlobalNamespaceStyle.Omitted,
+            SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+            SymbolDisplayGenericsOptions.IncludeTypeParameters | SymbolDisplayGenericsOptions.IncludeVariance | SymbolDisplayGenericsOptions.IncludeTypeConstraints,
+            SymbolDisplayMemberOptions.IncludeParameters | SymbolDisplayMemberOptions.IncludeAccessibility | SymbolDisplayMemberOptions.IncludeType | SymbolDisplayMemberOptions.IncludeModifiers
+            | SymbolDisplayMemberOptions.IncludeExplicitInterface|SymbolDisplayMemberOptions.IncludeRef,
+            SymbolDisplayDelegateStyle.NameAndSignature,
+            SymbolDisplayExtensionMethodStyle.StaticMethod,
+            SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
+            SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
+            SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
+            SymbolDisplayKindOptions.IncludeTypeKeyword | SymbolDisplayKindOptions.IncludeMemberKeyword,
+            SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNotNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.RemoveAttributeSuffix | SymbolDisplayMiscellaneousOptions.AllowDefaultLiteral
+            );
+        private static SymbolDisplayFormat format2 = new SymbolDisplayFormat(SymbolDisplayGlobalNamespaceStyle.Omitted,
+            SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+            SymbolDisplayGenericsOptions.IncludeTypeParameters | SymbolDisplayGenericsOptions.IncludeVariance | SymbolDisplayGenericsOptions.IncludeTypeConstraints,
+            SymbolDisplayMemberOptions.IncludeParameters | SymbolDisplayMemberOptions.IncludeAccessibility | SymbolDisplayMemberOptions.IncludeType | SymbolDisplayMemberOptions.IncludeModifiers,
+            SymbolDisplayDelegateStyle.NameAndSignature,
+            SymbolDisplayExtensionMethodStyle.StaticMethod,
+            SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
+            SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
+            SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
+            SymbolDisplayKindOptions.IncludeTypeKeyword | SymbolDisplayKindOptions.IncludeMemberKeyword,
+            SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNotNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.RemoveAttributeSuffix | SymbolDisplayMiscellaneousOptions.AllowDefaultLiteral
+            );
+
     }
 }
