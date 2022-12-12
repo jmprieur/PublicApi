@@ -11,8 +11,8 @@ namespace PublicApi
         static async Task Main(string[] args)
         {
             MSBuildLocator.RegisterDefaults();
-             //   string solutionPath = (args.Length>0 ? args[0] : null) ?? @"C:\gh\microsoft-identity-abstractions-for-dotnet\Microsoft.Identity.Abstractions.sln";
-            string solutionPath = @"C:\gh\microsoft-identity-web\Microsoft.Identity.Web.sln";
+            // string solutionPath = (args.Length>0 ? args[0] : null) ?? @"C:\gh\microsoft-identity-abstractions-for-dotnet\Microsoft.Identity.Abstractions.sln";
+            string solutionPath = (args.Length > 0 ? args[0] : null) ?? @"C:\gh\microsoft-identity-web\Microsoft.Identity.Web.sln";
 
             var msWorkspace = MSBuildWorkspace.Create();
 
@@ -71,7 +71,7 @@ namespace PublicApi
 
                     /// Interfaces have no base type
                     List<ITypeSymbol> bases = new List<ITypeSymbol>();
-                    if (type.BaseType != null && type.BaseType.ToDisplayString() != "object")
+                    if (type.BaseType != null && type.BaseType.ToDisplayString() != "object" && type.BaseType.ToDisplayString() != "System.Enum")
                     {
                         bases.Add(type.BaseType);
                     }
@@ -88,51 +88,30 @@ namespace PublicApi
                     foreach (ISymbol child in type.GetMembers().Where(m => IsPublicApi(m)).OrderBy(c => c.ToDisplayString()))
                     {
                         WriteAttributes(child.GetAttributes(), " ");
-                        Console.Write($" {child.DeclaredAccessibility.ToString().ToLower()} ");
-
-                        if (type.BaseType == null || type.BaseType.ToDisplayString() != "System.Enum")
-                        {
-                            if (child.IsStatic) { Console.Write("static "); }
-                            if (child.IsSealed) { Console.Write("sealed "); }
-                            if (child.IsAbstract) { Console.Write("abstract "); }
-                            if (child.IsVirtual) { Console.Write("virtual "); }
-                            if (child.IsOverride) { Console.Write("override "); }
-                        }
-
-                        IMethodSymbol? method = child as IMethodSymbol;
-                        if (method != null)
-                        {
-                            if (method.MethodKind != MethodKind.Constructor && method.MethodKind != MethodKind.StaticConstructor)
-                            {
-                                Console.Write($"{DisplaySimplifiedName(format, method.ReturnType, method)} ");
-                            }
-                            Console.WriteLine($"{DisplaySimplifiedName(format, method)};");
-                        }
-
-                        IPropertySymbol? property = child as IPropertySymbol;
-                        if (property != null)
-                        {
-                            Console.Write($"{DisplaySimplifiedName(format, property.Type, property)} ");
-
-                            Console.Write($"{DisplaySimplifiedName(format, property)} ");
-                            Console.Write("{");
-                            if (property.GetMethod != null && IsVisibleInPublicApi(property.GetMethod)) { Console.Write("set; "); }
-                            if (property.SetMethod != null && IsVisibleInPublicApi(property.SetMethod)) { Console.Write("get; "); }
-                            Console.WriteLine("}");
-                        }
 
                         IFieldSymbol? field = child as IFieldSymbol;
                         if (field != null)
                         {
-                            Console.Write($"{DisplaySimplifiedName(format, field)}");
+                            Console.Write($" {DisplaySimplifiedName(format, field)}");
                             if (field.HasConstantValue)
                             {
-                                Console.WriteLine($" = {field.ConstantValue};");
+                                if (field.Type.ToDisplayString() == "string")
+                                {
+                                    Console.WriteLine($" = \"{field.ConstantValue}\";");
+                                }
+                                else
+                                {
+                                    Console.WriteLine($" = {field.ConstantValue};");
+                                }
                             }
                             else
                             {
                                 Console.WriteLine(";");
                             }
+                        }
+                        else
+                        {
+                            Console.WriteLine($" {DisplaySimplifiedName(format, child)};");
                         }
                     }
                     Console.WriteLine("}");
@@ -145,7 +124,7 @@ namespace PublicApi
             if (attributes != null && attributes.Count > 0)
             {
                 Console.WriteLine(margin+"[" + string.Join("]\n[", attributes
-                    .Select(a => a.ToString()
+                    .Select(a => a.ToString()!
                             .Replace("Attribute(", string.Empty)
                             .Replace("Attribute]", string.Empty)
                             .Replace("System.", string.Empty))
@@ -158,17 +137,37 @@ namespace PublicApi
             string targetFramework = projectOfCompilation[t.ContainingAssembly].Name.Substring(t.ContainingAssembly.Name.Length).Trim(')', '(', ' ');
             if (string.IsNullOrWhiteSpace(targetFramework))
             {
-                targetFramework = Path.GetFileName(Path.GetDirectoryName(projectOfCompilation[t.ContainingAssembly].OutputFilePath));
+                targetFramework = Path.GetFileName(Path.GetDirectoryName(projectOfCompilation[t.ContainingAssembly].OutputFilePath))!;
             }
             return targetFramework;
         }
 
         private static string DisplaySimplifiedName(SymbolDisplayFormat format, ISymbol symbol, ISymbol? type = null)
         {
-            type = type ?? symbol;
-            if (type != null && type.ContainingType!=null)
+            ISymbol typeToExclude;
+            if (type == null) 
             {
-                return symbol.ToDisplayString().Replace(type.ContainingType.ToDisplayString(format) + ".", string.Empty).Replace(type.ContainingNamespace.ToDisplayString() + ".", string.Empty);
+                if (symbol is ITypeSymbol)
+                {
+                    typeToExclude = symbol;
+                }
+                else if (symbol.ContainingType != null)
+                {
+                    typeToExclude = symbol.ContainingType;
+                }
+                else
+                {
+                    typeToExclude = null;
+                }
+            }
+            else
+            {
+                typeToExclude = type;
+            }
+
+            if (typeToExclude!=null)
+            {
+                return symbol.ToDisplayString(format).Replace(typeToExclude.ToDisplayString(formatNoTypeKeyword) + ".", string.Empty).Replace(typeToExclude.ContainingNamespace.ToDisplayString() + ".", string.Empty);
             }
             else
                 return symbol.ToDisplayString(format);
@@ -200,24 +199,25 @@ namespace PublicApi
             | SymbolDisplayMemberOptions.IncludeExplicitInterface|SymbolDisplayMemberOptions.IncludeRef,
             SymbolDisplayDelegateStyle.NameAndSignature,
             SymbolDisplayExtensionMethodStyle.StaticMethod,
-            SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
+            SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeName| SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
             SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
             SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
             SymbolDisplayKindOptions.IncludeTypeKeyword | SymbolDisplayKindOptions.IncludeMemberKeyword,
-            SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNotNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.RemoveAttributeSuffix | SymbolDisplayMiscellaneousOptions.AllowDefaultLiteral
-            );
-        private static SymbolDisplayFormat format2 = new SymbolDisplayFormat(SymbolDisplayGlobalNamespaceStyle.Omitted,
-            SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
-            SymbolDisplayGenericsOptions.IncludeTypeParameters | SymbolDisplayGenericsOptions.IncludeVariance | SymbolDisplayGenericsOptions.IncludeTypeConstraints,
-            SymbolDisplayMemberOptions.IncludeParameters | SymbolDisplayMemberOptions.IncludeAccessibility | SymbolDisplayMemberOptions.IncludeType | SymbolDisplayMemberOptions.IncludeModifiers,
-            SymbolDisplayDelegateStyle.NameAndSignature,
-            SymbolDisplayExtensionMethodStyle.StaticMethod,
-            SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
-            SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
-            SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
-            SymbolDisplayKindOptions.IncludeTypeKeyword | SymbolDisplayKindOptions.IncludeMemberKeyword,
-            SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.IncludeNotNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.RemoveAttributeSuffix | SymbolDisplayMiscellaneousOptions.AllowDefaultLiteral
+            SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.RemoveAttributeSuffix | SymbolDisplayMiscellaneousOptions.AllowDefaultLiteral
             );
 
+        private static SymbolDisplayFormat formatNoTypeKeyword = new SymbolDisplayFormat(SymbolDisplayGlobalNamespaceStyle.Omitted,
+            SymbolDisplayTypeQualificationStyle.NameAndContainingTypesAndNamespaces,
+            SymbolDisplayGenericsOptions.IncludeTypeParameters | SymbolDisplayGenericsOptions.IncludeVariance | SymbolDisplayGenericsOptions.IncludeTypeConstraints,
+            SymbolDisplayMemberOptions.IncludeParameters | SymbolDisplayMemberOptions.IncludeAccessibility | SymbolDisplayMemberOptions.IncludeType | SymbolDisplayMemberOptions.IncludeModifiers
+            | SymbolDisplayMemberOptions.IncludeExplicitInterface | SymbolDisplayMemberOptions.IncludeRef,
+            SymbolDisplayDelegateStyle.NameAndSignature,
+            SymbolDisplayExtensionMethodStyle.StaticMethod,
+            SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeName | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
+            SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
+            SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
+             SymbolDisplayKindOptions.IncludeMemberKeyword,
+            SymbolDisplayMiscellaneousOptions.EscapeKeywordIdentifiers | SymbolDisplayMiscellaneousOptions.IncludeNullableReferenceTypeModifier | SymbolDisplayMiscellaneousOptions.UseSpecialTypes | SymbolDisplayMiscellaneousOptions.RemoveAttributeSuffix | SymbolDisplayMiscellaneousOptions.AllowDefaultLiteral
+            );
     }
 }
