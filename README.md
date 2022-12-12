@@ -29,7 +29,12 @@ Given a Visual Studio solution containing .NET Core (C#, VB.NET, F#, ...). displ
 
 ## Understand public API changes between two versions of a library containing several packages.
 
-Example to understand the differences in the public API between two versions of Microsoft.Identity.Web (the current version in the master branch, and a future version in another branch.
+To understand the differences in the public API between two versions of library, such as Microsoft.Identity.Web, between the current master branch, and a another branch (jmprieur/updateAbstractions1-0-5):
+- checkout the first branch or tag that you want to analyze
+- run the tool on the solution and redirect the output to a file
+- checkout the second branch or tag that you want to analyze
+- run the tool on the solution and redirect the output to another file
+- diff both files with your favorite diff tool.
 
 ```Shell
 cd c:\gh
