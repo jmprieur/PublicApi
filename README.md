@@ -1,12 +1,33 @@
 # PublicApi
 
-Usage:
-Build the solution PublicApi.sln.
-Copy PublicApi.exe to the execution path on your machine.
+## What is it?
+Given a Visual Studio solution containing .NET Core (C#, VB.NET, F#, ...). displays the public API (public classes with their public or protected members). This is helpful to understand the changes to the public API between two versions of a library 
 
-```Shell
-PublicApi MySolution.sln > publicApi.txt
-```
+## How to use?
+
+1. Build the solution PublicApi.sln.
+
+   ```Shell
+   mkdir c:\gh
+   cd C:\gh
+   git clone https://github.com/jmprieur/PublicApi
+   dotnet build
+   ```
+2. Add the output folder to the execution path on your machine.
+
+   ```Shell
+   Set PATH=%PATH%;C:\gh\PublicApi\src\PublicApi\net472\bin\debug
+   ```
+   
+3. Go in the folder containing the solution you're interested in analyzing
+
+4. Run the tool
+
+   ```Shell
+   PublicApi MySolution.sln > publicApi.txt
+   ```
+
+## Understand public API changes between two versions of a library containing several packages.
 
 Example to understand the differences in the public API between two versions of Microsoft.Identity.Web (the current version in the master branch, and a future version in another branch.
 
