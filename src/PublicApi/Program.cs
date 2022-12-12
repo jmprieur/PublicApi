@@ -16,22 +16,17 @@ namespace PublicApi
 
             var msWorkspace = MSBuildWorkspace.Create();
 
-            Console.WriteLine("Reading solution");
+            Console.Error.Write($"Loading solution '{solutionPath}' ... ");
             var solution = await msWorkspace.OpenSolutionAsync(solutionPath);
-            Console.WriteLine("Done");
+            Console.Error.WriteLine("Done.");
 
-            Console.WriteLine("Parsing");
+            Console.Error.Write("Parsing ... ");
             var compilations = await Task.WhenAll(solution.Projects.Where(p => p.FilePath!.Contains("src")).Select(p => p.GetCompilationAsync()));
-            Console.WriteLine("Done");
+            Console.Error.WriteLine("Done.");
 
-#pragma warning disable RS1024 // Symbols should be compared for equality. Here we want to compare the references.
-            ConcurrentDictionary<IAssemblySymbol, Project> projectOfCompilation = new ConcurrentDictionary<IAssemblySymbol, Project>();
-#pragma warning restore RS1024 // Symbols should be compared for equality
+            ConcurrentDictionary<IAssemblySymbol, Project> projectOfCompilation = new ConcurrentDictionary<IAssemblySymbol, Project>(SymbolEqualityComparer.Default);
             foreach (Project p in solution.Projects.Where(p => p.FilePath!.Contains("src")))
             {
-
-                // MULTIPLE PROJECTS FOR ASSEMBLY? (MicrosoftGraphBeta)
-
                 projectOfCompilation.TryAdd(p.GetCompilationAsync().Result!.Assembly, p);
             }
 
@@ -71,7 +66,9 @@ namespace PublicApi
 
                     /// Interfaces have no base type
                     List<ITypeSymbol> bases = new List<ITypeSymbol>();
-                    if (type.BaseType != null && type.BaseType.ToDisplayString() != "object" && type.BaseType.ToDisplayString() != "System.Enum")
+                    if (type.BaseType != null
+                        && type.BaseType.ToDisplayString() != "object"
+                        && type.BaseType.ToDisplayString() != "System.Enum")
                     {
                         bases.Add(type.BaseType);
                     }
@@ -85,13 +82,19 @@ namespace PublicApi
                     }
 
                     Console.WriteLine("{");
-                    foreach (ISymbol child in type.GetMembers().Where(m => IsPublicApi(m)).OrderBy(c => c.ToDisplayString()))
+                    foreach (ISymbol child in type.GetMembers()
+                                                  .Where(m => IsPublicApi(m))
+                                                  .OrderBy(c => c.ToDisplayString()))
                     {
                         WriteAttributes(child.GetAttributes(), " ");
 
-                        IFieldSymbol? field = child as IFieldSymbol;
-                        if (field != null)
+                        if (child is not IFieldSymbol)
                         {
+                            Console.WriteLine($" {DisplaySimplifiedName(format, child)};");
+                        }
+                        else
+                        {
+                            IFieldSymbol field = (child as IFieldSymbol)!;
                             Console.Write($" {DisplaySimplifiedName(format, field)}");
                             if (field.HasConstantValue)
                             {
@@ -108,10 +111,6 @@ namespace PublicApi
                             {
                                 Console.WriteLine(";");
                             }
-                        }
-                        else
-                        {
-                            Console.WriteLine($" {DisplaySimplifiedName(format, child)};");
                         }
                     }
                     Console.WriteLine("}");
@@ -144,25 +143,26 @@ namespace PublicApi
 
         private static string DisplaySimplifiedName(SymbolDisplayFormat format, ISymbol symbol, ISymbol? type = null)
         {
-            ISymbol typeToExclude;
-            if (type == null) 
+            ISymbol? typeToExclude;
+            switch (type)
             {
-                if (symbol is ITypeSymbol)
-                {
-                    typeToExclude = symbol;
-                }
-                else if (symbol.ContainingType != null)
-                {
-                    typeToExclude = symbol.ContainingType;
-                }
-                else
-                {
-                    typeToExclude = null;
-                }
-            }
-            else
-            {
-                typeToExclude = type;
+                case null:
+                    if (symbol is ITypeSymbol)
+                    {
+                        typeToExclude = symbol;
+                    }
+                    else if (symbol.ContainingType != null)
+                    {
+                        typeToExclude = symbol.ContainingType;
+                    }
+                    else
+                    {
+                        typeToExclude = null;
+                    }
+                    break;
+                default:
+                    typeToExclude = type;
+                    break;
             }
 
             if (typeToExclude!=null)
@@ -199,7 +199,7 @@ namespace PublicApi
             | SymbolDisplayMemberOptions.IncludeExplicitInterface|SymbolDisplayMemberOptions.IncludeRef,
             SymbolDisplayDelegateStyle.NameAndSignature,
             SymbolDisplayExtensionMethodStyle.StaticMethod,
-            SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeName| SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
+            SymbolDisplayParameterOptions.IncludeParamsRefOut /*| SymbolDisplayParameterOptions.IncludeOptionalBrackets*/ | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeName| SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
             SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
             SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
             SymbolDisplayKindOptions.IncludeTypeKeyword | SymbolDisplayKindOptions.IncludeMemberKeyword,
@@ -213,7 +213,7 @@ namespace PublicApi
             | SymbolDisplayMemberOptions.IncludeExplicitInterface | SymbolDisplayMemberOptions.IncludeRef,
             SymbolDisplayDelegateStyle.NameAndSignature,
             SymbolDisplayExtensionMethodStyle.StaticMethod,
-            SymbolDisplayParameterOptions.IncludeParamsRefOut | SymbolDisplayParameterOptions.IncludeOptionalBrackets | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeName | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
+            SymbolDisplayParameterOptions.IncludeParamsRefOut /*| SymbolDisplayParameterOptions.IncludeOptionalBrackets*/ | SymbolDisplayParameterOptions.IncludeType | SymbolDisplayParameterOptions.IncludeName | SymbolDisplayParameterOptions.IncludeExtensionThis | SymbolDisplayParameterOptions.IncludeDefaultValue,
             SymbolDisplayPropertyStyle.ShowReadWriteDescriptor,
             SymbolDisplayLocalOptions.IncludeRef | SymbolDisplayLocalOptions.IncludeType | SymbolDisplayLocalOptions.IncludeConstantValue,
              SymbolDisplayKindOptions.IncludeMemberKeyword,
