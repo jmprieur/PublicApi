@@ -32,6 +32,7 @@ Given a Visual Studio solution containing .NET Core (C#, VB.NET, F#, ...). displ
 Example to understand the differences in the public API between two versions of Microsoft.Identity.Web (the current version in the master branch, and a future version in another branch.
 
 ```Shell
+cd c:\gh
 git clone https://github.com/AzureAd/microsoft-identity-web
 cd microsoft-identity-web
 git checkout master
