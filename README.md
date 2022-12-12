@@ -11,6 +11,7 @@ Given a Visual Studio solution containing .NET Core (C#, VB.NET, F#, ...). displ
    mkdir c:\gh
    cd C:\gh
    git clone https://github.com/jmprieur/PublicApi
+   cd src
    dotnet build
    ```
 2. Add the output folder to the execution path on your machine.
